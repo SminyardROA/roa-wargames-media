@@ -19,16 +19,16 @@ jobs:
     steps:
       - name: Verify and upload media without adding it to Git history
         env:
-          MEDIA_SOURCES: ${{ inputs.sources }}
-          RELEASE_ID: ${{ inputs.release_id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node --input-type=module <<'NODE'
           import { createHash } from 'node:crypto';
-          const sources = JSON.parse(process.env.MEDIA_SOURCES);
+          import { readFile } from 'node:fs/promises';
+          const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8"));
+          const sources = JSON.parse(event.inputs.sources);
           if (sources.length !== 4) throw new Error('Exactly four approved assets are required');
           const headers = { Authorization: 'Bearer ' + process.env.GH_TOKEN, Accept: 'application/vnd.github+json' };
-          const root = 'https://api.github.com/repos/' + process.env.GITHUB_REPOSITORY + '/releases/' + process.env.RELEASE_ID;
+          const root = 'https://api.github.com/repos/' + process.env.GITHUB_REPOSITORY + '/releases/' + event.inputs.release_id;
           const listing = await fetch(root + "/assets", { headers });
           if (!listing.ok) throw new Error('Asset listing failed: ' + listing.status);
           const existing = await listing.json();
@@ -41,7 +41,7 @@ jobs:
             if (!response.ok) throw new Error(item.name + ' source download failed: ' + response.status);
             const bytes = Buffer.from(await response.arrayBuffer());
             if (createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw new Error(item.name + ' integrity check failed');
-            const url = 'https://uploads.github.com/repos/' + process.env.GITHUB_REPOSITORY + '/releases/' + process.env.RELEASE_ID + '/assets?name=' + encodeURIComponent(item.name);
+            const url = 'https://uploads.github.com/repos/' + process.env.GITHUB_REPOSITORY + '/releases/' + event.inputs.release_id + '/assets?name=' + encodeURIComponent(item.name);
             const upload = await fetch(url, { method: 'POST', headers: { ...headers, 'Content-Type': item.name.endsWith('.jpg') ? 'image/jpeg' : 'audio/mpeg' }, body: bytes, signal: AbortSignal.timeout(60000) });
             if (!upload.ok) throw new Error(item.name + ' upload failed: ' + upload.status);
             console.log(item.name + ' uploaded and SHA-256 verified');
