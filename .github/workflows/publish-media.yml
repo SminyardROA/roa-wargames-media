@@ -1,0 +1,49 @@
+name: Publish approved SAGEBRUSH media
+on:
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: Temporary source links and pinned SHA-256 values
+        required: true
+        type: string
+      release_id:
+        description: Draft release receiving the four files
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify and upload media without adding it to Git history
+        env:
+          MEDIA_SOURCES: ${{ inputs.sources }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          const sources = JSON.parse(process.env.MEDIA_SOURCES);
+          if (sources.length !== 4) throw new Error('Exactly four approved assets are required');
+          const headers = { Authorization: 'Bearer ' + process.env.GH_TOKEN, Accept: 'application/vnd.github+json' };
+          const root = 'https://api.github.com/repos/' + process.env.GITHUB_REPOSITORY + '/releases/' + process.env.RELEASE_ID;
+          const listing = await fetch(root + "/assets", { headers });
+          if (!listing.ok) throw new Error('Asset listing failed: ' + listing.status);
+          const existing = await listing.json();
+          for (const item of sources) {
+            console.log("::add-mask::" + item.url);
+            const previous = existing.find(a => a.name === item.name);
+            if (previous?.digest === "sha256:" + item.sha256 && previous.state === "uploaded") { console.log(item.name + " already verified"); continue; }
+            if (previous) throw new Error(item.name + " already exists with an unexpected digest or state");
+            const response = await fetch(item.url, { signal: AbortSignal.timeout(60000) });
+            if (!response.ok) throw new Error(item.name + ' source download failed: ' + response.status);
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw new Error(item.name + ' integrity check failed');
+            const url = 'https://uploads.github.com/repos/' + process.env.GITHUB_REPOSITORY + '/releases/' + process.env.RELEASE_ID + '/assets?name=' + encodeURIComponent(item.name);
+            const upload = await fetch(url, { method: 'POST', headers: { ...headers, 'Content-Type': item.name.endsWith('.jpg') ? 'image/jpeg' : 'audio/mpeg' }, body: bytes, signal: AbortSignal.timeout(60000) });
+            if (!upload.ok) throw new Error(item.name + ' upload failed: ' + upload.status);
+            console.log(item.name + ' uploaded and SHA-256 verified');
+          }
+          NODE
